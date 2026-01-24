@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Wurm Vein Constraint Solver</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>Wurm Vein Constraint Solver</h1>
+    <p class="sub">
+      Paste your shard/Analyse output. Tell the tool how far you stepped (E/W and N/S) from the original paste.
+      After each add, the map regenerates. If a vein resolves to exactly one tile, it will lock and never move.
+    </p>
+  </header>
+
+  <main class="grid">
+    <section class="panel">
+      <h2>1) Add step + pasted log</h2>
+
+      <div class="row">
+        <label>Step from original paste</label>
+        <div class="stepGrid">
+          <div>
+            <span class="hint">E/W (x)</span>
+            <input id="stepX" type="number" value="0" />
+          </div>
+          <div>
+            <span class="hint">N/S (y)</span>
+            <input id="stepY" type="number" value="0" />
+          </div>
+        </div>
+        <div class="microhint">
+          Convention: East = +x, West = −x, North = +y, South = −y.
+        </div>
+      </div>
+
+      <div class="row">
+        <label for="logText">Paste Analyse/Prospecting text</label>
+        <textarea id="logText" rows="12" placeholder="Paste lines like:
+You find faint traces of iron (north of east).
+You find a trace of copper (west).
+You would mine iron here.
+..."></textarea>
+        <div class="microhint">
+          Tip: paste only the relevant lines; the parser ignores unrelated text.
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="addBtn" class="primary">Add step + log (regenerate)</button>
+        <button id="undoBtn">Undo last</button>
+        <button id="resetBtn" class="danger">Reset</button>
+      </div>
+
+      <hr />
+
+      <h2>2) View</h2>
+      <div class="row">
+        <label for="layerSelect">Layer</label>
+        <select id="layerSelect">
+          <option value="ALL">ALL</option>
+        </select>
+        <div class="microhint">
+          “ALL” shows combined; select a vein key to inspect its feasible tiles.
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="viewBtn" class="secondary">View map</button>
+        <button id="downloadBtn">Download PNG</button>
+      </div>
+
+      <div class="stats" id="stats"></div>
+
+      <details class="help">
+        <summary>Expected text formats</summary>
+        <ul>
+          <li><code>You find faint traces of iron (north of east).</code></li>
+          <li><code>You find a trace of silver (west).</code></li>
+          <li><code>You would mine iron here.</code> (treated as “exact tile”)</li>
+          <li>Direction supports: N, S, E, W, NE, NW, SE, SW, and “north of east”, “east of north”, etc.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="canvasWrap">
+      <div class="canvasHeader">
+        <h2>Map</h2>
+        <span class="hint" id="viewHint">Adds regenerate automatically.</span>
+      </div>
+      <canvas id="mapCanvas" width="1100" height="720"></canvas>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Static app — safe to host on GitHub Pages.</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
