@@ -3,21 +3,21 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Wurm Vein Constraint Solver</title>
+  <title>Wurm Online - Advanced Shard Analyzer</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="header">
-    <h1>Wurm Vein Constraint Solver</h1>
+    <h1>Wurm Online - Advanced Shard Analyzer</h1>
     <p class="sub">
-      Paste your shard/Analyse output. Tell the tool how far you stepped (E/W and N/S) from the original paste.
-      After each add, the map regenerates. If a vein resolves to exactly one tile, it will lock and never move.
+      Paste your Analyse/Prospecting-style output. Enter how many tiles you stepped (E/W and N/S) from the original paste.
+      After each add, the map regenerates. If a vein resolves to exactly one tile, it locks and never moves.
     </p>
   </header>
 
   <main class="grid">
     <section class="panel">
-      <h2>1) Add step + pasted log</h2>
+      <h2>Add step + pasted log</h2>
 
       <div class="row">
         <label>Step from original paste</label>
@@ -38,7 +38,7 @@
 
       <div class="row">
         <label for="logText">Paste Analyse/Prospecting text</label>
-        <textarea id="logText" rows="12" placeholder="Paste lines like:
+        <textarea id="logText" rows="10" placeholder="Paste lines like:
 You find faint traces of iron (north of east).
 You find a trace of copper (west).
 You would mine iron here.
@@ -48,31 +48,17 @@ You would mine iron here.
         </div>
       </div>
 
-      <div class="actions">
+      <div class="actions actions4">
         <button id="addBtn" class="primary">Add step + log (regenerate)</button>
         <button id="undoBtn">Undo last</button>
         <button id="resetBtn" class="danger">Reset</button>
-      </div>
-
-      <hr />
-
-      <h2>2) View</h2>
-      <div class="row">
-        <label for="layerSelect">Layer</label>
-        <select id="layerSelect">
-          <option value="ALL">ALL</option>
-        </select>
-        <div class="microhint">
-          “ALL” shows combined; select a vein key to inspect its feasible tiles.
-        </div>
-      </div>
-
-      <div class="actions">
-        <button id="viewBtn" class="secondary">View map</button>
         <button id="downloadBtn">Download PNG</button>
       </div>
 
       <div class="stats" id="stats"></div>
+
+      <h3 class="entriesTitle">Entries</h3>
+      <div class="entriesList" id="entriesList"></div>
 
       <details class="help">
         <summary>Expected text formats</summary>
@@ -88,15 +74,10 @@ You would mine iron here.
     <section class="canvasWrap">
       <div class="canvasHeader">
         <h2>Map</h2>
-        <span class="hint" id="viewHint">Adds regenerate automatically.</span>
       </div>
       <canvas id="mapCanvas" width="1100" height="720"></canvas>
     </section>
   </main>
-
-  <footer class="footer">
-    <span>Static app — safe to host on GitHub Pages.</span>
-  </footer>
 
   <script src="app.js"></script>
 </body>
