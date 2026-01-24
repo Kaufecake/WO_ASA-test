@@ -1,15 +1,17 @@
 // Wurm Online - Advanced Shard Analyzer (static)
 //
-// Updates requested:
-// - Do NOT draw a red box on source tile; draw only a red X with a small index.
-// - Make squares larger (closer to WurmNode). We use a fixed-ish large cell size and auto-resize canvas.
-// - Use WurmNode-style ore labels: ore name line 1, quality label line 2 (e.g., 95-99 or exact number) with color.
-//   If an exact quality number is present in the line, we show it as a single integer (not a range).
-// - Keep hatched unresolved candidates.
-//
-// Notes:
-// - Quality ranges per Wurmpedia: Poor 20-29, Acceptable 30-39, Normal 40-59, Good 60-79, Very good 80-94, Utmost 95-99.
+// Working behavior:
+// - Negative step inputs supported (E/W +, -, N/S +, -).
+// - Reset/Undo/Download/Entries list all work.
+// - Grid renders immediately (even with no entries).
+// - Map bounds always include +/- 6 tiles around each source.
+// - Sources: red X + small index (NO red box).
+// - Unresolved candidate tiles: hatched + darkening overlap + labels inside tile.
+// - Locked veins: magenta outline + WurmNode style label (Ore + quality range or exact number, colored).
 
+// ----------------------------
+// Direction & distance helpers
+// ----------------------------
 function normalizeDirText(s){
   return s.trim().toLowerCase().replace(/-/g," ").replace(/\s+/g," ");
 }
@@ -81,6 +83,9 @@ function strengthToDistance(line){
   return null;
 }
 
+// ----------------------------
+// Quality label + colors (WurmNode-ish)
+// ----------------------------
 function qualityRangeFromAdjective(line){
   const s = line.toLowerCase();
   if(/\butmost\b/.test(s)) return "95-99";
@@ -93,28 +98,42 @@ function qualityRangeFromAdjective(line){
 }
 
 function qualityLabelFromLine(line){
+  // If numeric quality appears, display as an exact integer.
   const s = line.toLowerCase();
-
-  // If a numeric quality appears, use a single integer label (closest integer).
   const m = s.match(/\b(\d{1,3})(?:\.\d+)?\b/);
   if(m){
     const q = parseInt(m[1], 10);
-    if(!Number.isNaN(q) && q >= 0 && q <= 100){
-      return String(q);
-    }
+    if(!Number.isNaN(q) && q >= 0 && q <= 100) return String(q);
   }
-
   return qualityRangeFromAdjective(line);
 }
 
-function oreFromLine(line){
-  // "You notice a ... trace(s) of iron ore (...)" or "You would mine iron here."
-  const s = line.toLowerCase();
-  let m = s.match(/traces?\s+of\s+([a-z ]+?)\s*(?:ore)?\s*\(/i);
-  if(m) return m[1].trim().replace(/\s+/g," ");
-  m = s.match(/you would mine\s+([a-z ]+?)\s+here/i);
-  if(m) return m[1].trim().replace(/\s+/g," ");
-  return null;
+function qColor(qLabel){
+  // Updated bins per your screenshot:
+  // 95-99 orange, 80-94 purple, 60-79 blue, 40-59 green, 30-39 white, 20-29 gray.
+  const n = /^[0-9]+$/.test(qLabel) ? parseInt(qLabel,10) : null;
+
+  const bin = (num)=>{
+    if(num >= 95) return "95-99";
+    if(num >= 80) return "80-94";
+    if(num >= 60) return "60-79";
+    if(num >= 40) return "40-59";
+    if(num >= 30) return "30-39";
+    if(num >= 20) return "20-29";
+    return "other";
+  };
+
+  const b = (n!==null) ? bin(n) : qLabel;
+
+  switch(b){
+    case "95-99": return "rgba(255,149,0,1)";    // orange
+    case "80-94": return "rgba(166,77,255,1)";   // purple
+    case "60-79": return "rgba(60,140,255,1)";   // blue
+    case "40-59": return "rgba(0,255,120,1)";    // green
+    case "30-39": return "rgba(255,255,255,1)";  // white
+    case "20-29": return "rgba(170,170,170,1)";  // gray
+    default: return "rgba(220,220,220,1)";
+  }
 }
 
 function titleCase(s){
@@ -125,7 +144,11 @@ function veinKey(ore, qLabel){
   return `${titleCase(ore)}|${qLabel}`;
 }
 
+// ----------------------------
+// Parsing
+// ----------------------------
 function parseDirectionalLine(line){
+  // e.g. "You find faint traces of iron (north of east)."
   const m = line.match(/traces?\s+of\s+([a-z ]+?)\s*(?:ore)?\s*\(([^)]+)\)/i);
   if(!m) return null;
 
@@ -139,6 +162,7 @@ function parseDirectionalLine(line){
 }
 
 function parseExactLine(line){
+  // e.g. "You would mine iron here."
   const m = line.match(/you would mine\s+([a-z ]+?)\s+here/i);
   if(!m) return null;
 
@@ -170,8 +194,8 @@ function parseLog(text){
 // ----------------------------
 const state = {
   entries: [],        // {x,y,text}
-  locked: new Map(),  // veinKey -> {xy:"x,y", ore, qLabel}
-  feasible: new Map() // veinKey -> {set:Set("x,y"), ore, qLabel}
+  locked: new Map(),  // key -> {xy:"x,y", ore, qLabel}
+  feasible: new Map() // key -> {set:Set("x,y"), ore, qLabel}
 };
 
 function setIntersect(a, b){
@@ -184,12 +208,14 @@ function applyEntry(entry){
   const {x, y, text} = entry;
   const { directional, exact } = parseLog(text);
 
+  // Exact locks
   for(const ex of exact){
     if(state.locked.has(ex.key)) continue;
     state.locked.set(ex.key, { xy:`${x},${y}`, ore: ex.ore, qLabel: ex.qLabel });
     state.feasible.delete(ex.key);
   }
 
+  // Group directional constraints by vein key
   const grouped = new Map();
   for(const dl of directional){
     if(state.locked.has(dl.key)) continue;
@@ -199,7 +225,8 @@ function applyEntry(entry){
 
   for(const [key, lines] of grouped.entries()){
     let S = null;
-    let ore = lines[0].ore, qLabel = lines[0].qLabel;
+    const ore = lines[0].ore;
+    const qLabel = lines[0].qLabel;
 
     for(const ln of lines){
       const C = candidatesForLine(x, y, ln.d, ln.dir);
@@ -239,6 +266,12 @@ function parseXY(s){
 
 function getBounds(){
   const PAD = 6;
+
+  // Default grid even with no entries
+  if(state.entries.length === 0){
+    return { xmin:-6, xmax:6, ymin:-6, ymax:6 };
+  }
+
   let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
 
   const include = (x, y) => {
@@ -247,10 +280,6 @@ function getBounds(){
     ymin = Math.min(ymin, y);
     ymax = Math.max(ymax, y);
   };
-
-  if(state.entries.length === 0){
-    return { xmin:-10, xmax:10, ymin:-10, ymax:10 };
-  }
 
   for(const e of state.entries){
     include(e.x - PAD, e.y - PAD);
@@ -261,6 +290,7 @@ function getBounds(){
     const {x,y} = parseXY(v.xy);
     include(x,y);
   }
+
   for(const v of state.feasible.values()){
     for(const xy of v.set){
       const {x,y} = parseXY(xy);
@@ -291,7 +321,7 @@ function drawHatch(ctx, x, y, cell){
 }
 
 function sourceMarker(ctx, x, y, cell, idx){
-  // Only red X (no red box), plus a small index number (subscript-ish).
+  // Red X + index (no red box)
   ctx.strokeStyle = "rgba(255,0,0,0.95)";
   ctx.lineWidth = 3;
 
@@ -310,34 +340,6 @@ function sourceMarker(ctx, x, y, cell, idx){
 
   ctx.textAlign = "start";
   ctx.textBaseline = "alphabetic";
-}
-
-function qColor(qLabel){
-  // Approximate WurmNode colors (updated):
-  // 95-99 orange, 80-94 purple, 60-79 blue, 40-59 green, 30-39 white, 20-29 gray.
-  const n = /^[0-9]+$/.test(qLabel) ? parseInt(qLabel,10) : null;
-
-  const bin = (num)=>{
-    if(num >= 95) return "95-99";
-    if(num >= 80) return "80-94";
-    if(num >= 60) return "60-79";
-    if(num >= 40) return "40-59";
-    if(num >= 30) return "30-39";
-    if(num >= 20) return "20-29";
-    return "other";
-  };
-
-  const b = (n!==null) ? bin(n) : qLabel;
-
-  switch(b){
-    case "95-99": return "rgba(255,149,0,1)";    // orange
-    case "80-94": return "rgba(166,77,255,1)";   // purple
-    case "60-79": return "rgba(60,140,255,1)";   // blue
-    case "40-59": return "rgba(0,255,120,1)";    // green
-    case "30-39": return "rgba(255,255,255,1)";  // white
-    case "20-29": return "rgba(170,170,170,1)";  // gray
-    default: return "rgba(220,220,220,1)";
-  }
 }
 
 function drawLabel(ctx, x, y, ore, qLabel, color){
@@ -369,9 +371,10 @@ function render(){
   const gridW = (xmax-xmin+1);
   const gridH = (ymax-ymin+1);
 
-  // Larger cells like WurmNode; adjust canvas to fit bounds (with max to avoid absurd sizes).
-  const cell = 58; // big
+  // Large cells like WurmNode; auto resize canvas (bounded)
+  const cell = 58;
   const margin = 26;
+
   const width = Math.min(2400, Math.max(900, gridW * cell + margin*2));
   const height = Math.min(1600, Math.max(650, gridH * cell + margin*2));
 
@@ -387,33 +390,42 @@ function render(){
   const px = (x)=> ox + (x - xmin) * cell;
   const py = (y)=> oy + (ymax - y) * cell;
 
-  // Grid: thin lines + thicker major division every 4
+  // Grid
   for(let x=xmin; x<=xmax; x++){
     const X = px(x);
     const major = ((x - xmin) % 4 === 0);
     ctx.strokeStyle = major ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.07)";
     ctx.lineWidth = major ? 2 : 1;
-    ctx.beginPath(); ctx.moveTo(X, py(ymin)); ctx.lineTo(X, py(ymax)+cell); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(X, py(ymin));
+    ctx.lineTo(X, py(ymax)+cell);
+    ctx.stroke();
   }
   for(let y=ymin; y<=ymax; y++){
     const Y = py(y);
     const major = ((ymax - y) % 4 === 0);
     ctx.strokeStyle = major ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.07)";
     ctx.lineWidth = major ? 2 : 1;
-    ctx.beginPath(); ctx.moveTo(px(xmin), Y); ctx.lineTo(px(xmax)+cell, Y); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(px(xmin), Y);
+    ctx.lineTo(px(xmax)+cell, Y);
+    ctx.stroke();
   }
 
-  // unresolved candidates: hatched with overlap darkness + labels
-  const intensity = new Map();
-  const tileVeins = new Map(); // xy -> array of {ore,qLabel}
-  const addIntensity = (xy, ore, qLabel)=>{
-    intensity.set(xy, (intensity.get(xy)||0) + 1);
-    if(!tileVeins.has(xy)) tileVeins.set(xy, []);
-    tileVeins.get(xy).push({ore, qLabel});
-  };
+  // unresolved candidates: hatched + overlap darkness
+  const intensity = new Map(); // "x,y" -> overlap count
+  const addIntensity = (xy)=> intensity.set(xy, (intensity.get(xy)||0) + 1);
+
+  // Also build tile->labels for printing inside hatched tiles
+  const tileToLabels = new Map(); // xy -> [{ore,qLabel,color}, ...]
 
   for(const v of state.feasible.values()){
-    for(const xy of v.set) addIntensity(xy, v.ore, v.qLabel);
+    const color = qColor(v.qLabel);
+    for(const xy of v.set){
+      addIntensity(xy);
+      if(!tileToLabels.has(xy)) tileToLabels.set(xy, []);
+      tileToLabels.get(xy).push({ ore: v.ore, qLabel: v.qLabel, color });
+    }
   }
 
   let maxv = 1;
@@ -427,31 +439,57 @@ function render(){
     const X = px(x), Y = py(y);
     ctx.fillRect(X, Y, cell, cell);
     drawHatch(ctx, X, Y, cell);
+  }
 
-    // label unresolved tile (first vein only to avoid clutter)
-    const veins = tileVeins.get(xy);
-    if(veins && veins.length){
-      const vv = veins[0];
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
-      ctx.fillRect(X+4, Y+4, cell-8, 30);
+  // Draw labels inside hatched tiles (up to 2, then +N)
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "10px system-ui";
 
-      ctx.font = "13px system-ui";
-      ctx.fillStyle = "rgba(230,230,230,0.95)";
-      ctx.fillText(vv.ore, X+8, Y+18);
+  for(const [xy, labels] of tileToLabels.entries()){
+    const {x,y} = parseXY(xy);
+    const X = px(x), Y = py(y);
+    const cx = X + cell/2;
 
-      ctx.font = "13px system-ui";
-      ctx.fillStyle = qColor(vv.qLabel);
-      ctx.fillText(vv.qLabel, X+8, Y+34);
+    labels.sort((a,b)=>{
+      const na = /^[0-9]+$/.test(a.qLabel) ? parseInt(a.qLabel,10) : -1;
+      const nb = /^[0-9]+$/.test(b.qLabel) ? parseInt(b.qLabel,10) : -1;
+      return nb - na;
+    });
+
+    const shown = labels.slice(0, 2);
+    const extra = labels.length - shown.length;
+
+    // First label
+    ctx.fillStyle = "rgba(230,230,230,0.75)";
+    ctx.fillText(shown[0].ore, cx, Y + cell*0.45 - 6);
+    ctx.fillStyle = shown[0].color.replace(",1)", ",0.85)");
+    ctx.fillText(shown[0].qLabel, cx, Y + cell*0.45 + 6);
+
+    // Second label (if present)
+    if(shown.length === 2){
+      ctx.fillStyle = "rgba(230,230,230,0.60)";
+      ctx.fillText(shown[1].ore, cx, Y + cell*0.72 - 6);
+      ctx.fillStyle = shown[1].color.replace(",1)", ",0.80)");
+      ctx.fillText(shown[1].qLabel, cx, Y + cell*0.72 + 6);
+    }
+
+    if(extra > 0){
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.fillText(`+${extra}`, cx, Y + cell - 10);
     }
   }
- red X + index
+
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+
+  // sources: red X + index
   for(let i=0; i<state.entries.length; i++){
     const e = state.entries[i];
     sourceMarker(ctx, px(e.x), py(e.y), cell, i+1);
   }
 
-  // locked veins: magenta outline + label box
-  ctx.font = "14px system-ui";
+  // locked: magenta outline + WurmNode label box
   for(const v of state.locked.values()){
     const {x,y} = parseXY(v.xy);
     ctx.strokeStyle = "rgba(255,0,255,1)";
@@ -463,6 +501,9 @@ function render(){
   }
 }
 
+// ----------------------------
+// UI helpers
+// ----------------------------
 function updateStats(){
   const stats = document.getElementById("stats");
   stats.innerHTML =
@@ -531,7 +572,7 @@ function regenerate(){
 }
 
 // ----------------------------
-// UI Wiring
+// Wiring
 // ----------------------------
 document.getElementById("addBtn").addEventListener("click", ()=>{
   const stepX = parseInt(document.getElementById("stepX").value, 10) || 0;
@@ -565,6 +606,5 @@ document.getElementById("downloadBtn").addEventListener("click", ()=>{
   a.click();
 });
 
-// initial draw
+// Initial render (base grid visible immediately)
 regenerate();
-
