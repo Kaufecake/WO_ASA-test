@@ -1,14 +1,16 @@
 // Wurm Online - Advanced Shard Analyzer (static)
 //
-// Working behavior:
-// - Negative step inputs supported (E/W +, -, N/S +, -).
-// - Reset/Undo/Download/Entries list all work.
-// - Grid renders immediately (even with no entries).
-// - Map bounds always include +/- 6 tiles around each source.
-// - Sources: red X + small index (NO red box).
-// - Unresolved candidate tiles: hatched + darkening overlap + labels inside tile.
-// - Locked veins: magenta outline + WurmNode style label (Ore + quality range or exact number, colored).
+// Key fixes in this build:
+// - Supports multiple veins of the same ore+quality bin correctly by using:
+//    per-entry UNION of candidate tiles, then cross-entry INTERSECTION.
+// - Unresolved tiles are hatched and darken with overlap.
+// - Locked tiles are magenta-outlined.
+// - Labels render INSIDE the tile (ore on line 1, quality/range on line 2).
+// - Grid lines are visible (minor + major).
+// - Red X source markers remain (no red box).
+// - Entries list, Undo, Reset, Download PNG all work.
 
+//
 // ----------------------------
 // Direction & distance helpers
 // ----------------------------
@@ -83,9 +85,12 @@ function strengthToDistance(line){
   return null;
 }
 
+//
 // ----------------------------
-// Quality label + colors (WurmNode-ish)
+// Quality label + colors
 // ----------------------------
+// Your requirement: show ore name + colored number range below.
+// Also: if numeric quality exists, show single number (not a range).
 function qualityRangeFromAdjective(line){
   const s = line.toLowerCase();
   if(/\butmost\b/.test(s)) return "95-99";
@@ -98,7 +103,7 @@ function qualityRangeFromAdjective(line){
 }
 
 function qualityLabelFromLine(line){
-  // If numeric quality appears, display as an exact integer.
+  // If numeric quality appears, display as exact integer.
   const s = line.toLowerCase();
   const m = s.match(/\b(\d{1,3})(?:\.\d+)?\b/);
   if(m){
@@ -140,29 +145,30 @@ function titleCase(s){
   return s.split(" ").map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
 }
 
-function veinKey(ore, qLabel){
-  return `${titleCase(ore)}|${qLabel}`;
-}
-
+//
 // ----------------------------
-// Parsing
+// Parsing (more forgiving)
 // ----------------------------
+// Supports:
+//  - "You find faint traces of iron (north of east)."
+//  - "You find vague traces of iron ore (west)."
 function parseDirectionalLine(line){
-  // e.g. "You find faint traces of iron (north of east)."
+  const d = strengthToDistance(line);
+  if(!d) return null;
+
+  // Ore + direction in parentheses
   const m = line.match(/traces?\s+of\s+([a-z ]+?)\s*(?:ore)?\s*\(([^)]+)\)/i);
   if(!m) return null;
 
   const ore = m[1].trim().toLowerCase().replace(/\s+/g," ");
   const dir = m[2].trim();
-  const d = strengthToDistance(line);
-  if(!d) return null;
 
   const qLabel = qualityLabelFromLine(line);
-  return { key: veinKey(ore, qLabel), ore: titleCase(ore), qLabel, d, dir };
+  return { ore: titleCase(ore), qLabel, d, dir };
 }
 
 function parseExactLine(line){
-  // e.g. "You would mine iron here."
+  // "You would mine iron here."
   const m = line.match(/you would mine\s+([a-z ]+?)\s+here/i);
   if(!m) return null;
 
@@ -170,7 +176,7 @@ function parseExactLine(line){
   if(ore.includes("stone shards")) return null;
 
   const qLabel = qualityLabelFromLine(line);
-  return { key: veinKey(ore, qLabel), ore: titleCase(ore), qLabel };
+  return { ore: titleCase(ore), qLabel };
 }
 
 function parseLog(text){
@@ -189,14 +195,27 @@ function parseLog(text){
   return { directional, exact };
 }
 
+//
 // ----------------------------
 // Solver state
 // ----------------------------
+// IMPORTANT: We do NOT assume a single vein instance per ore+quality.
+// Instead we do per-entry union, then cross-entry intersection.
 const state = {
-  entries: [],        // {x,y,text}
-  locked: new Map(),  // key -> {xy:"x,y", ore, qLabel}
-  feasible: new Map() // key -> {set:Set("x,y"), ore, qLabel}
+  entries: [],
+
+  // locked: key -> {xy:"x,y", ore, qLabel}
+  locked: new Map(),
+
+  // feasible: key -> {set:Set("x,y"), ore, qLabel}
+  feasible: new Map()
 };
+
+function setUnion(a, b){
+  const out = new Set(a);
+  for(const v of b) out.add(v);
+  return out;
+}
 
 function setIntersect(a, b){
   const out = new Set();
@@ -204,58 +223,82 @@ function setIntersect(a, b){
   return out;
 }
 
-function applyEntry(entry){
-  const {x, y, text} = entry;
-  const { directional, exact } = parseLog(text);
-
-  // Exact locks
-  for(const ex of exact){
-    if(state.locked.has(ex.key)) continue;
-    state.locked.set(ex.key, { xy:`${x},${y}`, ore: ex.ore, qLabel: ex.qLabel });
-    state.feasible.delete(ex.key);
-  }
-
-  // Group directional constraints by vein key
-  const grouped = new Map();
-  for(const dl of directional){
-    if(state.locked.has(dl.key)) continue;
-    if(!grouped.has(dl.key)) grouped.set(dl.key, []);
-    grouped.get(dl.key).push(dl);
-  }
-
-  for(const [key, lines] of grouped.entries()){
-    let S = null;
-    const ore = lines[0].ore;
-    const qLabel = lines[0].qLabel;
-
-    for(const ln of lines){
-      const C = candidatesForLine(x, y, ln.d, ln.dir);
-      S = (S === null) ? C : setIntersect(S, C);
-    }
-    if(S === null) continue;
-
-    if(state.feasible.has(key)){
-      S = setIntersect(state.feasible.get(key).set, S);
-    }
-
-    if(S.size === 1){
-      const only = [...S][0];
-      state.locked.set(key, { xy: only, ore, qLabel });
-      state.feasible.delete(key);
-    } else {
-      state.feasible.set(key, { set: S, ore, qLabel });
-    }
-  }
+function makeKey(ore, qLabel){
+  return `${ore}|${qLabel}`;
 }
 
 function rebuildAll(){
   state.locked.clear();
   state.feasible.clear();
-  for(const e of state.entries){
-    applyEntry(e);
+
+  // 1) Gather per-entry unions for each ore+qLabel.
+  // entryUnions: key -> Set("x,y") union across all occurrences in that entry
+  // across entries, we'll intersect these unions.
+  const perEntryResults = []; // array of Map(key -> {set, ore, qLabel})
+
+  for(const entry of state.entries){
+    const { x, y, text } = entry;
+    const { directional, exact } = parseLog(text);
+
+    // Apply exact locks immediately.
+    for(const ex of exact){
+      const key = makeKey(ex.ore, ex.qLabel);
+      state.locked.set(key, { xy: `${x},${y}`, ore: ex.ore, qLabel: ex.qLabel });
+    }
+
+    const m = new Map();
+
+    // For each directional occurrence, compute its candidate set.
+    for(const obs of directional){
+      const key = makeKey(obs.ore, obs.qLabel);
+      if(state.locked.has(key)) continue;
+
+      const c = candidatesForLine(x, y, obs.d, obs.dir);
+      if(!m.has(key)){
+        m.set(key, { set: new Set(c), ore: obs.ore, qLabel: obs.qLabel });
+      } else {
+        // UNION within the entry for same ore+qLabel (multiple veins of same type)
+        const prev = m.get(key);
+        prev.set = setUnion(prev.set, c);
+      }
+    }
+
+    perEntryResults.push(m);
+  }
+
+  // 2) Cross-entry intersection of those unions.
+  // Start by collecting all keys that appear in ANY entry union.
+  const allKeys = new Set();
+  for(const em of perEntryResults){
+    for(const key of em.keys()) allKeys.add(key);
+  }
+
+  for(const key of allKeys){
+    if(state.locked.has(key)) continue;
+
+    let current = null;
+    let ore = null, qLabel = null;
+
+    for(const em of perEntryResults){
+      if(!em.has(key)) continue;
+      const v = em.get(key);
+      ore = v.ore; qLabel = v.qLabel;
+
+      current = (current === null) ? new Set(v.set) : setIntersect(current, v.set);
+    }
+
+    if(current === null) continue;
+
+    if(current.size === 1){
+      const only = [...current][0];
+      state.locked.set(key, { xy: only, ore, qLabel });
+    } else {
+      state.feasible.set(key, { set: current, ore, qLabel });
+    }
   }
 }
 
+//
 // ----------------------------
 // Rendering
 // ----------------------------
@@ -267,7 +310,6 @@ function parseXY(s){
 function getBounds(){
   const PAD = 6;
 
-  // Default grid even with no entries
   if(state.entries.length === 0){
     return { xmin:-6, xmax:6, ymin:-6, ymax:6 };
   }
@@ -290,7 +332,6 @@ function getBounds(){
     const {x,y} = parseXY(v.xy);
     include(x,y);
   }
-
   for(const v of state.feasible.values()){
     for(const xy of v.set){
       const {x,y} = parseXY(xy);
@@ -307,10 +348,10 @@ function drawHatch(ctx, x, y, cell){
   ctx.rect(x, y, cell, cell);
   ctx.clip();
 
-  ctx.strokeStyle = "rgba(255,255,255,0.22)";
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
   ctx.lineWidth = 1;
 
-  const step = 6;
+  const step = 8;
   for(let i = -cell; i < cell*2; i += step){
     ctx.beginPath();
     ctx.moveTo(x + i, y);
@@ -320,47 +361,50 @@ function drawHatch(ctx, x, y, cell){
   ctx.restore();
 }
 
-function sourceMarker(ctx, x, y, cell, idx){
-  // Red X + index (no red box)
+function drawCellLabel(ctx, X, Y, cell, ore, qLabel, color){
+  // Label inside cell like WurmNode
+  const boxW = cell - 10;
+  const boxH = 38;
+  const bx = X + 5;
+  const by = Y + (cell - boxH)/2;
+
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(bx, by, boxW, boxH);
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.font = "14px system-ui";
+  ctx.fillStyle = "rgba(230,230,230,0.95)";
+  ctx.fillText(ore, X + cell/2, by + 12);
+
+  ctx.font = "14px system-ui";
+  ctx.fillStyle = color;
+  ctx.fillText(qLabel, X + cell/2, by + 28);
+
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+}
+
+function sourceMarker(ctx, X, Y, cell, idx){
   ctx.strokeStyle = "rgba(255,0,0,0.95)";
   ctx.lineWidth = 3;
 
   ctx.beginPath();
-  ctx.moveTo(x + 6, y + 6);
-  ctx.lineTo(x + cell - 6, y + cell - 6);
-  ctx.moveTo(x + cell - 6, y + 6);
-  ctx.lineTo(x + 6, y + cell - 6);
+  ctx.moveTo(X + 10, Y + 10);
+  ctx.lineTo(X + cell - 10, Y + cell - 10);
+  ctx.moveTo(X + cell - 10, Y + 10);
+  ctx.lineTo(X + 10, Y + cell - 10);
   ctx.stroke();
 
   ctx.fillStyle = "rgba(255,0,0,0.95)";
   ctx.font = "12px system-ui";
   ctx.textAlign = "right";
   ctx.textBaseline = "alphabetic";
-  ctx.fillText(String(idx), x + cell - 3, y + cell - 4);
+  ctx.fillText(String(idx), X + cell - 4, Y + cell - 6);
 
   ctx.textAlign = "start";
   ctx.textBaseline = "alphabetic";
-}
-
-function drawLabel(ctx, x, y, ore, qLabel, color){
-  // WurmNode-ish label box
-  const padX = 10, padY = 8;
-  const lineH = 16;
-
-  ctx.font = "14px system-ui";
-  const w1 = ctx.measureText(ore).width;
-  const w2 = ctx.measureText(qLabel).width;
-  const w = Math.max(w1, w2) + padX*2;
-  const h = padY*2 + lineH*2;
-
-  ctx.fillStyle = "rgba(0,0,0,0.65)";
-  ctx.fillRect(x, y, w, h);
-
-  ctx.fillStyle = "rgba(230,230,230,0.95)";
-  ctx.fillText(ore, x + padX, y + padY + lineH - 3);
-
-  ctx.fillStyle = color;
-  ctx.fillText(qLabel, x + padX, y + padY + lineH*2 - 3);
 }
 
 function render(){
@@ -371,12 +415,12 @@ function render(){
   const gridW = (xmax-xmin+1);
   const gridH = (ymax-ymin+1);
 
-  // Large cells like WurmNode; auto resize canvas (bounded)
-  const cell = 58;
-  const margin = 26;
+  // Make cells big enough for label INSIDE
+  const cell = 86;
+  const margin = 24;
 
-  const width = Math.min(2400, Math.max(900, gridW * cell + margin*2));
-  const height = Math.min(1600, Math.max(650, gridH * cell + margin*2));
+  const width = Math.min(3000, Math.max(900, gridW*cell + margin*2));
+  const height = Math.min(2200, Math.max(700, gridH*cell + margin*2));
 
   if(canvas.width !== width) canvas.width = width;
   if(canvas.height !== height) canvas.height = height;
@@ -390,11 +434,11 @@ function render(){
   const px = (x)=> ox + (x - xmin) * cell;
   const py = (y)=> oy + (ymax - y) * cell;
 
-  // Grid
+  // Grid lines (fix "missing" look): stronger minor + stronger major
   for(let x=xmin; x<=xmax; x++){
     const X = px(x);
     const major = ((x - xmin) % 4 === 0);
-    ctx.strokeStyle = major ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.07)";
+    ctx.strokeStyle = major ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)";
     ctx.lineWidth = major ? 2 : 1;
     ctx.beginPath();
     ctx.moveTo(X, py(ymin));
@@ -404,7 +448,7 @@ function render(){
   for(let y=ymin; y<=ymax; y++){
     const Y = py(y);
     const major = ((ymax - y) % 4 === 0);
-    ctx.strokeStyle = major ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.07)";
+    ctx.strokeStyle = major ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)";
     ctx.lineWidth = major ? 2 : 1;
     ctx.beginPath();
     ctx.moveTo(px(xmin), Y);
@@ -412,12 +456,11 @@ function render(){
     ctx.stroke();
   }
 
-  // unresolved candidates: hatched + overlap darkness
-  const intensity = new Map(); // "x,y" -> overlap count
-  const addIntensity = (xy)=> intensity.set(xy, (intensity.get(xy)||0) + 1);
-
-  // Also build tile->labels for printing inside hatched tiles
+  // Build overlap intensity + tile label lists for unresolved
+  const intensity = new Map(); // xy -> count
   const tileToLabels = new Map(); // xy -> [{ore,qLabel,color}, ...]
+
+  const addIntensity = (xy)=> intensity.set(xy, (intensity.get(xy)||0) + 1);
 
   for(const v of state.feasible.values()){
     const color = qColor(v.qLabel);
@@ -431,76 +474,66 @@ function render(){
   let maxv = 1;
   for(const v of intensity.values()) maxv = Math.max(maxv, v);
 
+  // Fill + hatch unresolved tiles with darkening
   for(const [xy, v] of intensity.entries()){
     const {x,y} = parseXY(xy);
     const t = Math.max(0, Math.min(1, v/maxv));
-    const g = Math.floor(230 * (1 - t));
-    ctx.fillStyle = `rgb(${g},${g},${g})`;
+    const g = Math.floor(220 * (1 - t));
     const X = px(x), Y = py(y);
+
+    ctx.fillStyle = `rgb(${g},${g},${g})`;
     ctx.fillRect(X, Y, cell, cell);
     drawHatch(ctx, X, Y, cell);
   }
 
-  // Draw labels inside hatched tiles (up to 2, then +N)
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.font = "10px system-ui";
-
+  // Labels inside hatched tiles:
+  // If multiple different labels overlap, show the "strongest" one (most overlap contributes)
+  // and then "+N" if there are more.
   for(const [xy, labels] of tileToLabels.entries()){
     const {x,y} = parseXY(xy);
     const X = px(x), Y = py(y);
-    const cx = X + cell/2;
 
+    // Prefer highest quality numeric/bin just for determinism
     labels.sort((a,b)=>{
       const na = /^[0-9]+$/.test(a.qLabel) ? parseInt(a.qLabel,10) : -1;
       const nb = /^[0-9]+$/.test(b.qLabel) ? parseInt(b.qLabel,10) : -1;
       return nb - na;
     });
 
-    const shown = labels.slice(0, 2);
-    const extra = labels.length - shown.length;
+    const main = labels[0];
+    drawCellLabel(ctx, X, Y, cell, main.ore, main.qLabel, main.color);
 
-    // First label
-    ctx.fillStyle = "rgba(230,230,230,0.75)";
-    ctx.fillText(shown[0].ore, cx, Y + cell*0.45 - 6);
-    ctx.fillStyle = shown[0].color.replace(",1)", ",0.85)");
-    ctx.fillText(shown[0].qLabel, cx, Y + cell*0.45 + 6);
-
-    // Second label (if present)
-    if(shown.length === 2){
-      ctx.fillStyle = "rgba(230,230,230,0.60)";
-      ctx.fillText(shown[1].ore, cx, Y + cell*0.72 - 6);
-      ctx.fillStyle = shown[1].color.replace(",1)", ",0.80)");
-      ctx.fillText(shown[1].qLabel, cx, Y + cell*0.72 + 6);
-    }
-
-    if(extra > 0){
-      ctx.fillStyle = "rgba(255,255,255,0.6)";
-      ctx.fillText(`+${extra}`, cx, Y + cell - 10);
+    if(labels.length > 1){
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.font = "12px system-ui";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(`+${labels.length-1}`, X + cell - 6, Y + cell - 8);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
     }
   }
 
-  ctx.textAlign = "start";
-  ctx.textBaseline = "alphabetic";
-
-  // sources: red X + index
+  // Sources (red X)
   for(let i=0; i<state.entries.length; i++){
     const e = state.entries[i];
     sourceMarker(ctx, px(e.x), py(e.y), cell, i+1);
   }
 
-  // locked: magenta outline + WurmNode label box
+  // Locked tiles: magenta outline + label INSIDE
   for(const v of state.locked.values()){
     const {x,y} = parseXY(v.xy);
+    const X = px(x), Y = py(y);
+
     ctx.strokeStyle = "rgba(255,0,255,1)";
     ctx.lineWidth = 4;
-    ctx.strokeRect(px(x), py(y), cell, cell);
+    ctx.strokeRect(X, Y, cell, cell);
 
-    const color = qColor(v.qLabel);
-    drawLabel(ctx, px(x)+cell+10, py(y)+10, v.ore, v.qLabel, color);
+    drawCellLabel(ctx, X, Y, cell, v.ore, v.qLabel, qColor(v.qLabel));
   }
 }
 
+//
 // ----------------------------
 // UI helpers
 // ----------------------------
@@ -571,6 +604,7 @@ function regenerate(){
   render();
 }
 
+//
 // ----------------------------
 // Wiring
 // ----------------------------
@@ -606,5 +640,5 @@ document.getElementById("downloadBtn").addEventListener("click", ()=>{
   a.click();
 });
 
-// Initial render (base grid visible immediately)
+// Initial render
 regenerate();
