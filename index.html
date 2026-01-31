@@ -3,83 +3,115 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Wurm Online - Advanced Shard Analyzer</title>
+  <title>Wurm Online – Advanced Shard Analyzer</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="header">
-    <h1>Wurm Online - Advanced Shard Analyzer</h1>
-    <p class="sub">
-      Paste your Analyse/Prospecting-style output. Enter how many tiles you stepped (E/W and N/S) from the original paste.
-      After each add, the map regenerates. If a vein resolves to exactly one tile, it locks and never moves.
-    </p>
-  </header>
+  <div class="app">
+    <header class="topbar">
+      <div class="title">
+        <h1>Wurm Online – Advanced Shard Analyzer</h1>
+        <div class="subtitle">Paste shard logs (or Pastebin links) + step offsets. Generates candidate vein map.</div>
+      </div>
 
-  <main class="grid">
-    <section class="panel">
-      <h2>Add step + pasted log</h2>
+      <div class="controls">
+        <button id="btnAdd" class="btn primary">Add Entry</button>
+        <button id="btnUndo" class="btn">Undo</button>
+        <button id="btnRedo" class="btn">Redo</button>
+        <button id="btnReset" class="btn danger">Reset</button>
+        <button id="btnExport" class="btn">Download PNG</button>
+      </div>
+    </header>
 
-      <div class="row">
-        <label>Step from original paste</label>
-        <div class="stepGrid">
-          <div>
-            <span class="hint">E/W (x)</span>
-            <input id="stepX" type="number" value="0" />
+    <main class="main">
+      <section class="left">
+        <div class="panel">
+          <div class="panelHead">
+            <h2>Entries</h2>
+            <div class="hint">
+              Each entry = one shard analysis session at one tile.
+              Steps are <b>relative</b> from the previous entry (negative allowed).
+            </div>
           </div>
-          <div>
-            <span class="hint">N/S (y)</span>
-            <input id="stepY" type="number" value="0" />
+
+          <div id="entries" class="entries"></div>
+
+          <div class="panelFoot">
+            <div class="row">
+              <label class="lbl">Grid Size (tiles)</label>
+              <input id="gridSize" type="number" value="60" step="1" />
+              <label class="lbl">Tile Size (px)</label>
+              <input id="tileSize" type="number" value="64" step="1" />
+            </div>
+
+            <div class="row">
+              <label class="lbl">Max Search Distance (tiles)</label>
+              <input id="maxDist" type="number" value="12" step="1" />
+              <label class="lbl">Background</label>
+              <select id="bgMode">
+                <option value="dark" selected>Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </div>
+
+            <div class="row">
+              <label class="lbl">Center Map On</label>
+              <select id="centerMode">
+                <option value="origin" selected>Origin (Entry 1)</option>
+                <option value="bounds">Data Bounds</option>
+              </select>
+            </div>
           </div>
         </div>
-        <div class="microhint">
-          Convention: East = +x, West = −x, North = +y, South = −y.
+      </section>
+
+      <section class="right">
+        <div class="canvasWrap">
+          <canvas id="map" width="1200" height="900"></canvas>
+        </div>
+
+        <div class="legend panel">
+          <h2>Legend</h2>
+          <div class="legendRow"><span class="swatch s20"></span><span>20–29</span></div>
+          <div class="legendRow"><span class="swatch s30"></span><span>30–39</span></div>
+          <div class="legendRow"><span class="swatch s40"></span><span>40–59</span></div>
+          <div class="legendRow"><span class="swatch s60"></span><span>60–79</span></div>
+          <div class="legendRow"><span class="swatch s80"></span><span>80–94</span></div>
+          <div class="legendRow"><span class="swatch s95"></span><span>95–99</span></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="entryTpl">
+    <div class="entry">
+      <div class="entryHead">
+        <div class="entryTitle">Entry <span class="entryIndex"></span></div>
+        <button class="btn small danger btnRemove">Remove</button>
+      </div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>Step East (Δx)</label>
+          <input class="stepEast" type="number" value="0" step="1" />
+        </div>
+        <div class="field">
+          <label>Step North (Δy)</label>
+          <input class="stepNorth" type="number" value="0" step="1" />
         </div>
       </div>
 
-      <div class="row">
-        <label for="logText">Paste Analyse/Prospecting text</label>
-        <textarea id="logText" rows="10" placeholder="Paste lines like:
-You find faint traces of iron (north of east).
-You find a trace of copper (west).
-You would mine iron here.
-..."></textarea>
-        <div class="microhint">
-          Tip: paste only the relevant lines; the parser ignores unrelated text.
-        </div>
+      <div class="field">
+        <label>Log text or Pastebin URL</label>
+        <textarea class="log" rows="7" placeholder="[02:49:50] You start to analyse the shard. ..."></textarea>
       </div>
 
-      <div class="actions actions4">
-        <button id="addBtn" class="primary">Add step + log (regenerate)</button>
-        <button id="undoBtn">Undo last</button>
-        <button id="resetBtn" class="danger">Reset</button>
-        <button id="downloadBtn">Download PNG</button>
+      <div class="entryMeta">
+        <div class="metaLine"><b>Computed Tile:</b> <span class="tilePos">(pending)</span></div>
+        <div class="metaLine"><b>Detected Veins:</b> <span class="veinCount">0</span></div>
       </div>
-
-      <div class="stats" id="stats"></div>
-
-      <h3 class="entriesTitle">Entries</h3>
-      <div class="entriesList" id="entriesList"></div>
-
-      <details class="help">
-        <summary>Expected text formats</summary>
-        <ul>
-          <li><code>You find faint traces of iron (north of east).</code></li>
-          <li><code>You find a trace of silver (west).</code></li>
-          <li><code>You would mine iron here.</code> (treated as “exact tile”)</li>
-          <li>Direction supports: N, S, E, W, NE, NW, SE, SW, and “north of east”, “east of north”, etc.</li>
-        </ul>
-      </details>
-    </section>
-
-    <section class="canvasWrap">
-      <div class="canvasHeader">
-        <h2>Map</h2>
-      </div>
-      <div class="canvasScroller" id="canvasScroller">
-        <canvas id="mapCanvas" width="1100" height="720"></canvas>
-      </div>
-    </section>
-  </main>
+    </div>
+  </template>
 
   <script src="app.js"></script>
 </body>
