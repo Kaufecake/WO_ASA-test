@@ -1,49 +1,81 @@
-/* Wurm Online – Advanced Shard Analyzer (app.js) v5.1
-   - Absolute step coordinates (matches UI: "from original paste")
-   - Uniform grid lines
-   - Auto bounds padding
-   - Entries list
-   - Self-diagnostics: "JS loaded" indicator + visible errors if DOM mismatch
+/* Wurm Online – Advanced Shard Analyzer (app.js) v5
+   Fixes:
+   - WurmNode-like candidate regions: FILLED wedges/rectangles (not ring-perimeter L-shapes)
+   - Robust DOM lookup (prevents UI break / paste issues due to id mismatches)
+   - StepX/StepY treated as DELTAS
+   - Grid always pads >= 6 tiles beyond farthest feasible cell / source
+   - Uniform grid only (no major gridlines)
 */
 
-document.addEventListener("DOMContentLoaded", () => {
-  // ---------- DOM ----------
-  const canvas = document.getElementById("mapCanvas");
+(function () {
+  // ---------- Robust DOM lookup ----------
+  function $(sel) { return document.querySelector(sel); }
+
+  const canvas =
+    $("#mapCanvas") ||
+    $("#canvas") ||
+    document.querySelector("canvas");
+
   const ctx = canvas ? canvas.getContext("2d") : null;
 
-  const stepXEl = document.getElementById("stepX");
-  const stepYEl = document.getElementById("stepY");
-  const logTextEl = document.getElementById("logText");
+  const stepXEl =
+    $("#stepX") ||
+    $("#dx") ||
+    $("#step_x") ||
+    document.querySelector('input[name="stepX"]') ||
+    document.querySelector('input[type="number"]');
 
-  const addBtn = document.getElementById("addBtn");
-  const undoBtn = document.getElementById("undoBtn");
-  const resetBtn = document.getElementById("resetBtn");
-  const downloadBtn = document.getElementById("downloadBtn");
+  const stepYEl =
+    $("#stepY") ||
+    $("#dy") ||
+    $("#step_y") ||
+    document.querySelector('input[name="stepY"]') ||
+    (document.querySelectorAll('input[type="number"]')[1] || null);
 
-  const statsEl = document.getElementById("stats");
-  const entriesListEl = document.getElementById("entriesList");
-  const jsStatusEl = document.getElementById("jsStatus");
+  const logTextEl =
+    $("#logText") ||
+    $("#log") ||
+    $("#logInput") ||
+    $("#paste") ||
+    document.querySelector("textarea");
 
-  if (jsStatusEl) {
-    jsStatusEl.innerHTML = `JS Status: <span style="color:#3ddc84;">loaded</span>`;
+  const addBtn =
+    $("#addBtn") ||
+    $("#add") ||
+    document.querySelector('button[data-action="add"]') ||
+    Array.from(document.querySelectorAll("button")).find(b => /add/i.test(b.textContent));
+
+  const undoBtn =
+    $("#undoBtn") ||
+    $("#undo") ||
+    document.querySelector('button[data-action="undo"]') ||
+    Array.from(document.querySelectorAll("button")).find(b => /undo/i.test(b.textContent));
+
+  const resetBtn =
+    $("#resetBtn") ||
+    $("#reset") ||
+    document.querySelector('button[data-action="reset"]') ||
+    Array.from(document.querySelectorAll("button")).find(b => /reset/i.test(b.textContent));
+
+  const downloadBtn =
+    $("#downloadBtn") ||
+    $("#download") ||
+    document.querySelector('button[data-action="download"]') ||
+    Array.from(document.querySelectorAll("button")).find(b => /download/i.test(b.textContent));
+
+  const statsEl =
+    $("#stats") ||
+    $("#status") ||
+    document.querySelector(".stats") ||
+    document.querySelector(".status");
+
+  if (!canvas || !ctx || !logTextEl) {
+    console.warn("[WO Shard Analyzer] Missing required elements (canvas/textarea). Script will not run.");
+    return;
   }
 
-  function fatal(msg) {
-    console.error("[WO ASA]", msg);
-    if (statsEl) {
-      statsEl.innerHTML = `<div style="color:#ff3b3b;"><b>Error:</b> ${msg}</div>`;
-    }
-  }
-
-  if (!canvas || !ctx) return fatal("Canvas #mapCanvas not found (or context failed).");
-  if (!stepXEl || !stepYEl) return fatal("Step inputs (#stepX, #stepY) not found.");
-  if (!logTextEl) return fatal("Textarea #logText not found.");
-  if (!addBtn || !undoBtn || !resetBtn || !downloadBtn) return fatal("One or more buttons missing (add/undo/reset/download).");
-  if (!statsEl) return fatal("Stats element #stats not found.");
-  if (!entriesListEl) return fatal("Entries list #entriesList not found.");
-
-  // ---------- Constants ----------
-  const STORAGE_KEY = "wo_shard_analyzer_state_v5_1";
+  // ---------- Constants / helpers ----------
+  const STORAGE_KEY = "wo_shard_analyzer_state_v5";
   const PAD_TILES = 6;
 
   const QUALITY_BANDS = [
@@ -54,23 +86,24 @@ document.addEventListener("DOMContentLoaded", () => {
     { key: "utmost",    label: "95-99", color: "#ffb020" }
   ];
 
-  // ---------- Helpers ----------
-  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-  const parseIntSafe = (v, fallback = 0) => {
+  function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+  function parseIntSafe(v, fallback = 0) {
     const n = parseInt(v, 10);
     return Number.isFinite(n) ? n : fallback;
-  };
-  const coordKey = (x, y) => `${x},${y}`;
-  const parseCoordKey = (k) => {
+  }
+  function coordKey(x, y) { return `${x},${y}`; }
+  function parseCoordKey(k) {
     const [xs, ys] = k.split(",");
     return { x: parseInt(xs, 10), y: parseInt(ys, 10) };
-  };
-  const setIntersect = (a, b) => {
+  }
+  function setIntersect(a, b) {
     const out = new Set();
     for (const v of a) if (b.has(v)) out.add(v);
     return out;
-  };
-  const titleCase = (s) => s.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+  }
+  function titleCase(s) {
+    return s.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+  }
 
   function qlColorForNumber(n) {
     if (!Number.isFinite(n)) return "#cfd8dc";
@@ -98,6 +131,7 @@ document.addEventListener("DOMContentLoaded", () => {
     t = t.replace(/\s+ore\b/g, "");
     t = t.replace(/\s+vein\b/g, "");
     t = t.replace(/\s+here\b/g, "");
+    // Ignore “stone shards” / shards context entirely for mining lock behavior:
     if (t.includes("stone shards")) return null;
     if (t.includes("shards")) return null;
     t = t.replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -123,46 +157,89 @@ document.addEventListener("DOMContentLoaded", () => {
   function parseDirectionPhrase(phraseRaw) {
     if (!phraseRaw) return null;
     const p = phraseRaw.toLowerCase().replace(/[().]/g, "").trim();
-    if (DIR_MAP[p]) return { dx: DIR_MAP[p].dx, dy: DIR_MAP[p].dy };
+    if (DIR_MAP[p]) return { type: "dir", ...DIR_MAP[p] };
+
     const m = p.match(/(north|south|east|west)\s+of\s+(north|south|east|west)/i);
     if (m) {
       const v1 = DIR_MAP[m[1].toLowerCase()];
       const v2 = DIR_MAP[m[2].toLowerCase()];
-      return { dx: clamp(v1.dx + v2.dx, -1, 1), dy: clamp(v1.dy + v2.dy, -1, 1) };
+      const dx = clamp(v1.dx + v2.dx, -1, 1);
+      const dy = clamp(v1.dy + v2.dy, -1, 1);
+      return { type: "dir", dx, dy };
     }
     return null;
   }
 
-  function octantMatch(dx, dy, dir) {
-    const sx = Math.sign(dx);
-    const sy = Math.sign(dy);
-    if (dir.dx === 0 && sx !== 0) return false;
-    if (dir.dx !== 0 && sx !== dir.dx) return false;
-    if (dir.dy === 0 && sy !== 0) return false;
-    if (dir.dy !== 0 && sy !== dir.dy) return false;
-    return true;
-  }
-
+  // ---------- Strength -> distance ----------
+  // Key change: distances tuned to give “area wedges” that resemble WurmNode’s output scale.
+  // Adjust these if you want the wedge tighter/looser.
   function strengthToDistance(strengthWord) {
-    if (!strengthWord) return 2;
+    if (!strengthWord) return 6;
     const s = strengthWord.toLowerCase();
-    if (s.includes("indistinct")) return 5;
-    if (s.includes("vague"))      return 4;
-    if (s.includes("minuscule"))  return 3;
-    if (s.includes("faint"))      return 3;
-    if (s.includes("slight"))     return 2;
-    return 2;
+    if (s.includes("slight"))     return 6;
+    if (s.includes("faint"))      return 8;
+    if (s.includes("minuscule"))  return 8;
+    if (s.includes("vague"))      return 10;
+    if (s.includes("indistinct")) return 12;
+    return 6;
   }
 
-  function ringCandidates(source, d, dir) {
+  // ---------- WurmNode-like candidate regions (FILLED, not perimeter-only) ----------
+  function matchesCardinal(dx, dy, dir) {
+    if (dir.dx === 1 && dir.dy === 0) return dx > 0;  // east half-plane
+    if (dir.dx === -1 && dir.dy === 0) return dx < 0; // west
+    if (dir.dx === 0 && dir.dy === 1) return dy > 0;  // north
+    if (dir.dx === 0 && dir.dy === -1) return dy < 0; // south
+    return false;
+  }
+
+  function matchesDiagonal(dx, dy, dir) {
+    if (dir.dx === 1 && dir.dy === 1) return dx > 0 && dy > 0;   // NE
+    if (dir.dx === -1 && dir.dy === 1) return dx < 0 && dy > 0;  // NW
+    if (dir.dx === 1 && dir.dy === -1) return dx > 0 && dy < 0;  // SE
+    if (dir.dx === -1 && dir.dy === -1) return dx < 0 && dy < 0; // SW
+    return false;
+  }
+
+  // Filled region:
+  // - Cardinal: rectangle out to distance d, with +/-d lateral spread (matches typical “cone/strip” feel)
+  // - Diagonal: filled triangle in the octant using Manhattan constraint |dx|+|dy| <= d
+  function wedgeCandidates(source, d, dir) {
     const out = new Set();
     if (!d || d < 1 || !dir) return out;
 
+    const sx = source.x, sy = source.y;
+
+    // Cardinal directions => rectangle
+    if ((dir.dx === 1 || dir.dx === -1) && dir.dy === 0) {
+      // East/West: forward distance up to d, lateral spread up to d
+      for (let dx = 1; dx <= d; dx++) {
+        const realDx = dx * dir.dx;
+        for (let dy = -d; dy <= d; dy++) {
+          out.add(coordKey(sx + realDx, sy + dy));
+        }
+      }
+      return out;
+    }
+
+    if ((dir.dy === 1 || dir.dy === -1) && dir.dx === 0) {
+      // North/South: forward distance up to d, lateral spread up to d
+      for (let dy = 1; dy <= d; dy++) {
+        const realDy = dy * dir.dy;
+        for (let dx = -d; dx <= d; dx++) {
+          out.add(coordKey(sx + dx, sy + realDy));
+        }
+      }
+      return out;
+    }
+
+    // Diagonals => filled triangle in octant
     for (let dx = -d; dx <= d; dx++) {
       for (let dy = -d; dy <= d; dy++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== d) continue;
-        if (!octantMatch(dx, dy, dir)) continue;
-        out.add(coordKey(source.x + dx, source.y + dy));
+        if (dx === 0 && dy === 0) continue;
+        if (!matchesDiagonal(dx, dy, dir)) continue;
+        if ((Math.abs(dx) + Math.abs(dy)) > d) continue; // triangle boundary
+        out.add(coordKey(sx + dx, sy + dy));
       }
     }
     return out;
@@ -180,6 +257,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!descRaw) return null;
     const d = descRaw.toLowerCase().trim();
 
+    // “indistinct trace of something, but cannot quite make it out”
     if (d.includes("something") && d.includes("cannot quite make it out")) {
       return { ore: "Unknown", adj: null };
     }
@@ -216,23 +294,30 @@ document.addEventListener("DOMContentLoaded", () => {
     let started = false;
     let mineOre = null;
     let mineMaxQl = null;
+
     const traces = [];
 
+    // Start rule you asked for:
+    // - Underground: ignore until “You start to analyse...”
+    // - Surface: also accept “You start to gather fragments...”
     const startRegex = /(you start to gather fragments of the rock\.)|(you start to analys(e|z)e the (shard|ore)\.)/i;
     const endRegex = /you finish analys(e|z)ing the (shard|ore)\./i;
 
     const mineRegex = /you would mine (.+?) here\./i;
     const maxQlRegex = /it has a max quality of (\d+)\./i;
 
-    const traceRegex = /\b(trace of)\s+(.+?)\s*\((.+?)\)\./i;
+    // More permissive: any “… trace of <descriptor> (<dir>).”
+    const traceRegex = /\btrace of\s+(.+?)\s*\((.+?)\)\./i;
 
     for (const line of lines) {
       if (!started) {
         if (startRegex.test(line)) started = true;
         else continue;
       }
+
       if (endRegex.test(line)) break;
 
+      // Mining context (used ONLY if it’s actually ore, not shards)
       const mMine = line.match(mineRegex);
       if (mMine) {
         const ore = oreNormalize(mMine[1]);
@@ -249,8 +334,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const mTrace = line.match(traceRegex);
       if (mTrace) {
         const strength = extractStrengthWord(line);
-        const descriptor = mTrace[2].trim();
-        const dirPhrase = mTrace[3].trim();
+        const descriptor = mTrace[1].trim();
+        const dirPhrase = mTrace[2].trim();
 
         const dir = parseDirectionPhrase(dirPhrase);
         if (!dir) continue;
@@ -288,7 +373,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (_) {}
   }
 
-  // ---------- Solver ----------
+  // ---------- Multiplicity / solver ----------
   function bestMatchingVein(veins, ore, qlDisplay, candidateSet) {
     let best = null, bestScore = 0;
     for (const v of veins) {
@@ -356,22 +441,24 @@ document.addEventListener("DOMContentLoaded", () => {
       const source = { x: entry.x, y: entry.y };
       const parsed = entry.parsed;
 
+      // Lock at source ONLY if mining ore + numeric max QL
       if (parsed.mineOre && Number.isFinite(parsed.mineMaxQl)) {
         const ore = parsed.mineOre;
         const ql = parsed.mineMaxQl;
         lockVeinAt(veins, ore, String(ql), qlColorForNumber(ql), source.x, source.y);
       }
 
-      const groups = new Map();
+      const groups = new Map(); // key => candidateSet
 
       for (const t of parsed.traces) {
         const ore = t.ore || "Unknown";
+
         const band = bandForAdj(t.adj);
         const qlDisplay = band ? band.label : "";
         const qlColor = band ? band.color : "#cfd8dc";
 
         const d = strengthToDistance(t.strengthWord);
-        const cand = ringCandidates(source, d, t.dir);
+        const cand = wedgeCandidates(source, d, t.dir);
         if (cand.size === 0) continue;
 
         const key = `${ore}||${qlDisplay}||${qlColor}`;
@@ -422,26 +509,22 @@ document.addEventListener("DOMContentLoaded", () => {
       minX = -10; minY = -10; maxX = 10; maxY = 10;
     }
 
-    minX -= PAD_TILES;
-    minY -= PAD_TILES;
-    maxX += PAD_TILES;
-    maxY += PAD_TILES;
+    minX -= PAD_TILES; minY -= PAD_TILES;
+    maxX += PAD_TILES; maxY += PAD_TILES;
 
     return { minX, minY, maxX, maxY };
   }
 
   function tileToPx(x, y, bounds, cell, margin) {
-    return {
-      px: margin + (x - bounds.minX) * cell,
-      py: margin + (bounds.maxY - y) * cell
-    };
+    const px = margin + (x - bounds.minX) * cell;
+    const py = margin + (bounds.maxY - y) * cell;
+    return { px, py };
   }
 
   function drawUniformGrid(bounds, cell, margin) {
     ctx.save();
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(255,255,255,0.08)";
-
     const cols = bounds.maxX - bounds.minX + 1;
     const rows = bounds.maxY - bounds.minY + 1;
 
@@ -460,7 +543,6 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.lineTo(margin + cols * cell, y);
       ctx.stroke();
     }
-
     ctx.restore();
   }
 
@@ -471,7 +553,6 @@ document.addEventListener("DOMContentLoaded", () => {
     ctx.clip();
     ctx.strokeStyle = "rgba(255,255,255,0.12)";
     ctx.lineWidth = 1;
-
     const step = 6;
     for (let i = -cell; i < cell * 2; i += step) {
       ctx.beginPath();
@@ -495,7 +576,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function drawLabelCentered(textTop, textBottom, centerX, centerY, color) {
     ctx.save();
-    const padX = 10;
+    const padX = 10, padY = 8;
     ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
     const wTop = ctx.measureText(textTop).width;
     const wBot = textBottom ? ctx.measureText(textBottom).width : 0;
@@ -581,40 +662,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function renderEntriesList() {
-    entriesListEl.innerHTML = "";
-    state.entries.forEach((e, idx) => {
-      const card = document.createElement("div");
-      card.className = "entryCard";
-
-      const left = document.createElement("div");
-      left.className = "entryMeta";
-      left.innerHTML = `<strong>Entry ${idx + 1}</strong><br/>x=${e.x}, y=${e.y}`;
-
-      const snippet = document.createElement("div");
-      snippet.className = "entrySnippet";
-      snippet.textContent = (e.raw || "").split(/\r?\n/)[0] || "";
-      left.appendChild(snippet);
-
-      const right = document.createElement("div");
-      right.className = "entryBtns";
-
-      const rm = document.createElement("button");
-      rm.type = "button";
-      rm.textContent = "Remove";
-      rm.addEventListener("click", () => {
-        state.entries.splice(idx, 1);
-        saveState();
-        render();
-      });
-
-      right.appendChild(rm);
-      card.appendChild(left);
-      card.appendChild(right);
-      entriesListEl.appendChild(card);
-    });
-  }
-
   function render() {
     const veins = rebuildVeinsFromEntries();
     drawBackground();
@@ -626,38 +673,49 @@ document.addEventListener("DOMContentLoaded", () => {
     const margin = 30;
     const usableW = canvas.width - margin * 2;
     const usableH = canvas.height - margin * 2;
-
     const cell = Math.max(8, Math.floor(Math.min(usableW / cols, usableH / rows)));
 
     drawUniformGrid(bounds, cell, margin);
     drawVeins(bounds, cell, margin, veins);
     drawSources(bounds, cell, margin);
 
-    const locked = veins.filter(v => v.locked).length;
-    statsEl.innerHTML = `
-      <div><b>Entries:</b> ${state.entries.length}</div>
-      <div><b>Vein instances:</b> ${veins.length} (locked: ${locked}, unresolved: ${veins.length - locked})</div>
-      <div><b>Bounds padding:</b> ${PAD_TILES} tiles</div>
-    `;
-
-    renderEntriesList();
+    if (statsEl) {
+      const locked = veins.filter(v => v.locked).length;
+      statsEl.innerHTML = `
+        <div><b>Entries:</b> ${state.entries.length}</div>
+        <div><b>Vein instances:</b> ${veins.length} (locked: ${locked}, unresolved: ${veins.length - locked})</div>
+        <div><b>Bounds padding:</b> ${PAD_TILES} tiles</div>
+      `;
+    }
   }
 
-  // ---------- Actions ----------
+  // ---------- UX ----------
+  function currentPosition() {
+    if (state.entries.length === 0) return { x: 0, y: 0 };
+    const last = state.entries[state.entries.length - 1];
+    return { x: last.x, y: last.y };
+  }
+
   function addEntry() {
-    const x = parseIntSafe(stepXEl.value, 0);
-    const y = parseIntSafe(stepYEl.value, 0);
+    const dx = parseIntSafe(stepXEl ? stepXEl.value : 0, 0);
+    const dy = parseIntSafe(stepYEl ? stepYEl.value : 0, 0);
 
     const raw = (logTextEl.value || "").trim();
-    if (!raw) return alert("Paste a log block first.");
+    if (!raw) { alert("Paste a log block first."); return; }
 
     const parsed = parseLogBlock(raw);
     if (!parsed) {
-      return alert("No usable session found. Include 'You start to gather fragments...' or 'You start to analyse/analyze the shard/ore.'");
+      alert("No usable session found. Paste must include 'You start to gather fragments...' or 'You start to analyse/analyze the shard/ore.'");
+      return;
     }
 
-    state.entries.push({ x, y, parsed, raw });
+    const cur = currentPosition();
+    const x = cur.x + dx;
+    const y = cur.y + dy;
+
+    state.entries.push({ x, y, dx, dy, parsed, raw });
     saveState();
+
     logTextEl.value = "";
     render();
   }
@@ -684,12 +742,11 @@ document.addEventListener("DOMContentLoaded", () => {
     a.click();
   }
 
-  addBtn.addEventListener("click", addEntry);
-  undoBtn.addEventListener("click", undoEntry);
-  resetBtn.addEventListener("click", resetAll);
-  downloadBtn.addEventListener("click", downloadPNG);
+  if (addBtn) addBtn.addEventListener("click", addEntry);
+  if (undoBtn) undoBtn.addEventListener("click", undoEntry);
+  if (resetBtn) resetBtn.addEventListener("click", resetAll);
+  if (downloadBtn) downloadBtn.addEventListener("click", downloadPNG);
 
-  // ---------- Init ----------
   loadState();
   render();
-});
+})();
