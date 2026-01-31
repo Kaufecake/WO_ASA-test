@@ -1,83 +1,35 @@
-/* Wurm Online – Advanced Shard Analyzer (app.js) v4
-   Fixes:
-   - Robust DOM lookup (prevents UI break / paste issues due to id mismatches)
-   - StepX/StepY treated as DELTAS (updates based on step size like before)
-   - Grid always pads >= 6 tiles beyond farthest feasible cell / source
-   - Uniform grid only (no major gridlines)
+/* Wurm Online – Advanced Shard Analyzer (app.js) v5
+   - Uses the ORIGINAL UI contract: Step from ORIGINAL paste (absolute coords)
+   - Uniform grid lines only
+   - Grid auto-bounds: always PAD_TILES beyond farthest feasible cell / source
+   - Entries list restored (cards + remove)
+   - No “robust selector” guessing; uses your real IDs from index.html
 */
 
 (function () {
-  // ---------- Robust DOM lookup ----------
-  function $(sel) { return document.querySelector(sel); }
+  const canvas = document.getElementById("mapCanvas");
+  const ctx = canvas?.getContext("2d");
 
-  // Try common IDs first; fall back to first matching element types if needed.
-  const canvas =
-    $("#mapCanvas") ||
-    $("#canvas") ||
-    document.querySelector("canvas");
+  const stepXEl = document.getElementById("stepX");
+  const stepYEl = document.getElementById("stepY");
+  const logTextEl = document.getElementById("logText");
 
-  const ctx = canvas ? canvas.getContext("2d") : null;
+  const addBtn = document.getElementById("addBtn");
+  const undoBtn = document.getElementById("undoBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const downloadBtn = document.getElementById("downloadBtn");
 
-  const stepXEl =
-    $("#stepX") ||
-    $("#dx") ||
-    $("#step_x") ||
-    document.querySelector('input[name="stepX"]') ||
-    document.querySelector('input[type="number"]');
+  const statsEl = document.getElementById("stats");
+  const entriesListEl = document.getElementById("entriesList");
 
-  const stepYEl =
-    $("#stepY") ||
-    $("#dy") ||
-    $("#step_y") ||
-    document.querySelector('input[name="stepY"]') ||
-    (document.querySelectorAll('input[type="number"]')[1] || null);
-
-  const logTextEl =
-    $("#logText") ||
-    $("#log") ||
-    $("#logInput") ||
-    $("#paste") ||
-    document.querySelector("textarea");
-
-  const addBtn =
-    $("#addBtn") ||
-    $("#add") ||
-    document.querySelector('button[data-action="add"]') ||
-    Array.from(document.querySelectorAll("button")).find(b => /add/i.test(b.textContent));
-
-  const undoBtn =
-    $("#undoBtn") ||
-    $("#undo") ||
-    document.querySelector('button[data-action="undo"]') ||
-    Array.from(document.querySelectorAll("button")).find(b => /undo/i.test(b.textContent));
-
-  const resetBtn =
-    $("#resetBtn") ||
-    $("#reset") ||
-    document.querySelector('button[data-action="reset"]') ||
-    Array.from(document.querySelectorAll("button")).find(b => /reset/i.test(b.textContent));
-
-  const downloadBtn =
-    $("#downloadBtn") ||
-    $("#download") ||
-    document.querySelector('button[data-action="download"]') ||
-    Array.from(document.querySelectorAll("button")).find(b => /download/i.test(b.textContent));
-
-  const statsEl =
-    $("#stats") ||
-    $("#status") ||
-    document.querySelector(".stats") ||
-    document.querySelector(".status");
-
-  // If the page is missing essentials, fail gracefully instead of breaking the UI.
-  if (!canvas || !ctx || !logTextEl) {
-    console.warn("[WO Shard Analyzer] Missing required elements (canvas/textarea). Script will not run.");
+  if (!canvas || !ctx || !stepXEl || !stepYEl || !logTextEl) {
+    console.error("[WO ASA] Missing required DOM elements. Check index.html IDs.");
     return;
   }
 
-  // ---------- Constants / helpers ----------
-  const STORAGE_KEY = "wo_shard_analyzer_state_v4";
-  const PAD_TILES = 6; // ALWAYS at least 6 tiles wider in every direction
+  // ---------- Constants ----------
+  const STORAGE_KEY = "wo_shard_analyzer_state_v5";
+  const PAD_TILES = 6;
 
   const QUALITY_BANDS = [
     { key: "poor",      label: "20-29", color: "#9aa0a6" },
@@ -87,6 +39,7 @@
     { key: "utmost",    label: "95-99", color: "#ffb020" }
   ];
 
+  // ---------- Helpers ----------
   function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
   function parseIntSafe(v, fallback = 0) {
     const n = parseInt(v, 10);
@@ -157,14 +110,14 @@
   function parseDirectionPhrase(phraseRaw) {
     if (!phraseRaw) return null;
     const p = phraseRaw.toLowerCase().replace(/[().]/g, "").trim();
-    if (DIR_MAP[p]) return { type: "octant", ...DIR_MAP[p] };
+    if (DIR_MAP[p]) return { dx: DIR_MAP[p].dx, dy: DIR_MAP[p].dy };
     const m = p.match(/(north|south|east|west)\s+of\s+(north|south|east|west)/i);
     if (m) {
       const v1 = DIR_MAP[m[1].toLowerCase()];
       const v2 = DIR_MAP[m[2].toLowerCase()];
       const dx = clamp(v1.dx + v2.dx, -1, 1);
       const dy = clamp(v1.dy + v2.dy, -1, 1);
-      return { type: "octant", dx, dy };
+      return { dx, dy };
     }
     return null;
   }
@@ -182,7 +135,7 @@
     return true;
   }
 
-  // Strength -> distance (tuneable)
+  // Strength -> distance mapping (kept as-is for now)
   function strengthToDistance(strengthWord) {
     if (!strengthWord) return 2;
     const s = strengthWord.toLowerCase();
@@ -198,12 +151,11 @@
     const out = new Set();
     if (!d || d < 1 || !dir) return out;
 
-    const sx = source.x, sy = source.y;
     for (let dx = -d; dx <= d; dx++) {
       for (let dy = -d; dy <= d; dy++) {
         if (Math.max(Math.abs(dx), Math.abs(dy)) !== d) continue;
         if (!octantMatch(dx, dy, dir)) continue;
-        out.add(coordKey(sx + dx, sy + dy));
+        out.add(coordKey(source.x + dx, source.y + dy));
       }
     }
     return out;
@@ -255,10 +207,8 @@
     const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
     let started = false;
-
     let mineOre = null;
     let mineMaxQl = null;
-
     const traces = [];
 
     const startRegex = /(you start to gather fragments of the rock\.)|(you start to analys(e|z)e the (shard|ore)\.)/i;
@@ -316,7 +266,6 @@
   }
 
   // ---------- State ----------
-  // entries store ABSOLUTE positions (x,y). stepX/stepY in UI are deltas applied on add.
   let state = {
     entries: [],
     nextVeinId: 1
@@ -416,7 +365,6 @@
 
       for (const t of parsed.traces) {
         const ore = t.ore || "Unknown";
-
         const band = bandForAdj(t.adj);
         const qlDisplay = band ? band.label : "";
         const qlColor = band ? band.color : "#cfd8dc";
@@ -449,7 +397,6 @@
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // IMPORTANT: Bounds include feasible cells + sources, and PAD_TILES in all directions
   function computeBounds(veins) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
@@ -484,14 +431,16 @@
 
   function tileToPx(x, y, bounds, cell, margin) {
     const px = margin + (x - bounds.minX) * cell;
-    const py = margin + (bounds.maxY - y) * cell;
+    const py = margin + (bounds.maxY - y) * cell; // invert y
     return { px, py };
   }
 
+  // Uniform-only grid
   function drawUniformGrid(bounds, cell, margin) {
     ctx.save();
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(255,255,255,0.08)";
+
     const cols = bounds.maxX - bounds.minX + 1;
     const rows = bounds.maxY - bounds.minY + 1;
 
@@ -544,7 +493,7 @@
 
   function drawLabelCentered(textTop, textBottom, centerX, centerY, color) {
     ctx.save();
-    const padX = 10, padY = 8;
+    const padX = 10;
     ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
     const wTop = ctx.measureText(textTop).width;
     const wBot = textBottom ? ctx.measureText(textBottom).width : 0;
@@ -583,7 +532,6 @@
         continue;
       }
 
-      // unresolved => hatch candidate cells and center label over bounding box
       let minPx = Infinity, minPy = Infinity, maxPx = -Infinity, maxPy = -Infinity;
 
       for (const k of v.feasible) {
@@ -632,6 +580,43 @@
     }
   }
 
+  function renderEntriesList() {
+    if (!entriesListEl) return;
+    entriesListEl.innerHTML = "";
+
+    state.entries.forEach((e, idx) => {
+      const card = document.createElement("div");
+      card.className = "entryCard";
+
+      const left = document.createElement("div");
+      left.className = "entryMeta";
+      left.innerHTML = `<strong>Entry ${idx + 1}</strong><br/>x=${e.x}, y=${e.y}`;
+
+      const snippet = document.createElement("div");
+      snippet.className = "entrySnippet";
+      snippet.textContent = (e.raw || "").split(/\r?\n/).slice(0, 1).join(" ").slice(0, 140);
+      left.appendChild(snippet);
+
+      const right = document.createElement("div");
+      right.className = "entryBtns";
+
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.textContent = "Remove";
+      rm.addEventListener("click", () => {
+        state.entries.splice(idx, 1);
+        saveState();
+        render();
+      });
+
+      right.appendChild(rm);
+
+      card.appendChild(left);
+      card.appendChild(right);
+      entriesListEl.appendChild(card);
+    });
+  }
+
   function render() {
     const veins = rebuildVeinsFromEntries();
     drawBackground();
@@ -658,18 +643,15 @@
         <div><b>Bounds padding:</b> ${PAD_TILES} tiles</div>
       `;
     }
+
+    renderEntriesList();
   }
 
-  // ---------- UX: Step deltas like before ----------
-  function currentPosition() {
-    if (state.entries.length === 0) return { x: 0, y: 0 };
-    const last = state.entries[state.entries.length - 1];
-    return { x: last.x, y: last.y };
-  }
-
+  // ---------- Actions ----------
   function addEntry() {
-    const dx = parseIntSafe(stepXEl ? stepXEl.value : 0, 0);
-    const dy = parseIntSafe(stepYEl ? stepYEl.value : 0, 0);
+    // ABSOLUTE steps from original paste (this matches your UI text)
+    const x = parseIntSafe(stepXEl.value, 0);
+    const y = parseIntSafe(stepYEl.value, 0);
 
     const raw = (logTextEl.value || "").trim();
     if (!raw) {
@@ -683,14 +665,10 @@
       return;
     }
 
-    const cur = currentPosition();
-    const x = cur.x + dx;
-    const y = cur.y + dy;
-
-    state.entries.push({ x, y, dx, dy, parsed, raw });
+    state.entries.push({ x, y, parsed, raw });
     saveState();
 
-    // optional: clear paste box for next entry
+    // clear paste box for next entry (optional)
     logTextEl.value = "";
     render();
   }
@@ -717,11 +695,10 @@
     a.click();
   }
 
-  // ---------- Wire up buttons safely ----------
-  if (addBtn) addBtn.addEventListener("click", addEntry);
-  if (undoBtn) undoBtn.addEventListener("click", undoEntry);
-  if (resetBtn) resetBtn.addEventListener("click", resetAll);
-  if (downloadBtn) downloadBtn.addEventListener("click", downloadPNG);
+  addBtn?.addEventListener("click", addEntry);
+  undoBtn?.addEventListener("click", undoEntry);
+  resetBtn?.addEventListener("click", resetAll);
+  downloadBtn?.addEventListener("click", downloadPNG);
 
   // ---------- Init ----------
   loadState();
