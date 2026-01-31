@@ -7,7 +7,11 @@
    - Uniform grid only (no major gridlines)
 */
 
-(function () {
+document.addEventListener("DOMContentLoaded", () => {
+  const jsStatus = document.querySelector("#jsStatus");
+  if (jsStatus) jsStatus.textContent = "loaded";
+
+  (function () {
   // ---------- Robust DOM lookup ----------
   function $(sel) { return document.querySelector(sel); }
 
@@ -749,4 +753,5 @@
 
   loadState();
   render();
-})();
+  })();
+});
