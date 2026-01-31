@@ -1,14 +1,15 @@
-/* Wurm Online – Advanced Shard Analyzer (app.js) v5
-   - Uses the ORIGINAL UI contract: Step from ORIGINAL paste (absolute coords)
-   - Uniform grid lines only
-   - Grid auto-bounds: always PAD_TILES beyond farthest feasible cell / source
-   - Entries list restored (cards + remove)
-   - No “robust selector” guessing; uses your real IDs from index.html
+/* Wurm Online – Advanced Shard Analyzer (app.js) v5.1
+   - Absolute step coordinates (matches UI: "from original paste")
+   - Uniform grid lines
+   - Auto bounds padding
+   - Entries list
+   - Self-diagnostics: "JS loaded" indicator + visible errors if DOM mismatch
 */
 
-(function () {
+document.addEventListener("DOMContentLoaded", () => {
+  // ---------- DOM ----------
   const canvas = document.getElementById("mapCanvas");
-  const ctx = canvas?.getContext("2d");
+  const ctx = canvas ? canvas.getContext("2d") : null;
 
   const stepXEl = document.getElementById("stepX");
   const stepYEl = document.getElementById("stepY");
@@ -21,14 +22,28 @@
 
   const statsEl = document.getElementById("stats");
   const entriesListEl = document.getElementById("entriesList");
+  const jsStatusEl = document.getElementById("jsStatus");
 
-  if (!canvas || !ctx || !stepXEl || !stepYEl || !logTextEl) {
-    console.error("[WO ASA] Missing required DOM elements. Check index.html IDs.");
-    return;
+  if (jsStatusEl) {
+    jsStatusEl.innerHTML = `JS Status: <span style="color:#3ddc84;">loaded</span>`;
   }
 
+  function fatal(msg) {
+    console.error("[WO ASA]", msg);
+    if (statsEl) {
+      statsEl.innerHTML = `<div style="color:#ff3b3b;"><b>Error:</b> ${msg}</div>`;
+    }
+  }
+
+  if (!canvas || !ctx) return fatal("Canvas #mapCanvas not found (or context failed).");
+  if (!stepXEl || !stepYEl) return fatal("Step inputs (#stepX, #stepY) not found.");
+  if (!logTextEl) return fatal("Textarea #logText not found.");
+  if (!addBtn || !undoBtn || !resetBtn || !downloadBtn) return fatal("One or more buttons missing (add/undo/reset/download).");
+  if (!statsEl) return fatal("Stats element #stats not found.");
+  if (!entriesListEl) return fatal("Entries list #entriesList not found.");
+
   // ---------- Constants ----------
-  const STORAGE_KEY = "wo_shard_analyzer_state_v5";
+  const STORAGE_KEY = "wo_shard_analyzer_state_v5_1";
   const PAD_TILES = 6;
 
   const QUALITY_BANDS = [
@@ -40,24 +55,22 @@
   ];
 
   // ---------- Helpers ----------
-  function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-  function parseIntSafe(v, fallback = 0) {
+  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+  const parseIntSafe = (v, fallback = 0) => {
     const n = parseInt(v, 10);
     return Number.isFinite(n) ? n : fallback;
-  }
-  function coordKey(x, y) { return `${x},${y}`; }
-  function parseCoordKey(k) {
+  };
+  const coordKey = (x, y) => `${x},${y}`;
+  const parseCoordKey = (k) => {
     const [xs, ys] = k.split(",");
     return { x: parseInt(xs, 10), y: parseInt(ys, 10) };
-  }
-  function setIntersect(a, b) {
+  };
+  const setIntersect = (a, b) => {
     const out = new Set();
     for (const v of a) if (b.has(v)) out.add(v);
     return out;
-  }
-  function titleCase(s) {
-    return s.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
-  }
+  };
+  const titleCase = (s) => s.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
 
   function qlColorForNumber(n) {
     if (!Number.isFinite(n)) return "#cfd8dc";
@@ -115,9 +128,7 @@
     if (m) {
       const v1 = DIR_MAP[m[1].toLowerCase()];
       const v2 = DIR_MAP[m[2].toLowerCase()];
-      const dx = clamp(v1.dx + v2.dx, -1, 1);
-      const dy = clamp(v1.dy + v2.dy, -1, 1);
-      return { dx, dy };
+      return { dx: clamp(v1.dx + v2.dx, -1, 1), dy: clamp(v1.dy + v2.dy, -1, 1) };
     }
     return null;
   }
@@ -125,17 +136,13 @@
   function octantMatch(dx, dy, dir) {
     const sx = Math.sign(dx);
     const sy = Math.sign(dy);
-
     if (dir.dx === 0 && sx !== 0) return false;
     if (dir.dx !== 0 && sx !== dir.dx) return false;
-
     if (dir.dy === 0 && sy !== 0) return false;
     if (dir.dy !== 0 && sy !== dir.dy) return false;
-
     return true;
   }
 
-  // Strength -> distance mapping (kept as-is for now)
   function strengthToDistance(strengthWord) {
     if (!strengthWord) return 2;
     const s = strengthWord.toLowerCase();
@@ -224,7 +231,6 @@
         if (startRegex.test(line)) started = true;
         else continue;
       }
-
       if (endRegex.test(line)) break;
 
       const mMine = line.match(mineRegex);
@@ -266,10 +272,7 @@
   }
 
   // ---------- State ----------
-  let state = {
-    entries: [],
-    nextVeinId: 1
-  };
+  let state = { entries: [], nextVeinId: 1 };
 
   function saveState() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
@@ -285,7 +288,7 @@
     } catch (_) {}
   }
 
-  // ---------- Multiplicity / solver ----------
+  // ---------- Solver ----------
   function bestMatchingVein(veins, ore, qlDisplay, candidateSet) {
     let best = null, bestScore = 0;
     for (const v of veins) {
@@ -353,15 +356,13 @@
       const source = { x: entry.x, y: entry.y };
       const parsed = entry.parsed;
 
-      // lock at source if mining context gives ore + numeric max QL
       if (parsed.mineOre && Number.isFinite(parsed.mineMaxQl)) {
         const ore = parsed.mineOre;
         const ql = parsed.mineMaxQl;
         lockVeinAt(veins, ore, String(ql), qlColorForNumber(ql), source.x, source.y);
       }
 
-      // group directional traces within this entry
-      const groups = new Map(); // key => candidateSet
+      const groups = new Map();
 
       for (const t of parsed.traces) {
         const ore = t.ore || "Unknown";
@@ -430,12 +431,12 @@
   }
 
   function tileToPx(x, y, bounds, cell, margin) {
-    const px = margin + (x - bounds.minX) * cell;
-    const py = margin + (bounds.maxY - y) * cell; // invert y
-    return { px, py };
+    return {
+      px: margin + (x - bounds.minX) * cell,
+      py: margin + (bounds.maxY - y) * cell
+    };
   }
 
-  // Uniform-only grid
   function drawUniformGrid(bounds, cell, margin) {
     ctx.save();
     ctx.lineWidth = 1;
@@ -470,6 +471,7 @@
     ctx.clip();
     ctx.strokeStyle = "rgba(255,255,255,0.12)";
     ctx.lineWidth = 1;
+
     const step = 6;
     for (let i = -cell; i < cell * 2; i += step) {
       ctx.beginPath();
@@ -575,15 +577,12 @@
         ctx.textBaseline = "bottom";
         ctx.fillText("Source", cx + 14, cy - 14);
       }
-
       ctx.restore();
     }
   }
 
   function renderEntriesList() {
-    if (!entriesListEl) return;
     entriesListEl.innerHTML = "";
-
     state.entries.forEach((e, idx) => {
       const card = document.createElement("div");
       card.className = "entryCard";
@@ -594,7 +593,7 @@
 
       const snippet = document.createElement("div");
       snippet.className = "entrySnippet";
-      snippet.textContent = (e.raw || "").split(/\r?\n/).slice(0, 1).join(" ").slice(0, 140);
+      snippet.textContent = (e.raw || "").split(/\r?\n/)[0] || "";
       left.appendChild(snippet);
 
       const right = document.createElement("div");
@@ -610,7 +609,6 @@
       });
 
       right.appendChild(rm);
-
       card.appendChild(left);
       card.appendChild(right);
       entriesListEl.appendChild(card);
@@ -635,40 +633,31 @@
     drawVeins(bounds, cell, margin, veins);
     drawSources(bounds, cell, margin);
 
-    if (statsEl) {
-      const locked = veins.filter(v => v.locked).length;
-      statsEl.innerHTML = `
-        <div><b>Entries:</b> ${state.entries.length}</div>
-        <div><b>Vein instances:</b> ${veins.length} (locked: ${locked}, unresolved: ${veins.length - locked})</div>
-        <div><b>Bounds padding:</b> ${PAD_TILES} tiles</div>
-      `;
-    }
+    const locked = veins.filter(v => v.locked).length;
+    statsEl.innerHTML = `
+      <div><b>Entries:</b> ${state.entries.length}</div>
+      <div><b>Vein instances:</b> ${veins.length} (locked: ${locked}, unresolved: ${veins.length - locked})</div>
+      <div><b>Bounds padding:</b> ${PAD_TILES} tiles</div>
+    `;
 
     renderEntriesList();
   }
 
   // ---------- Actions ----------
   function addEntry() {
-    // ABSOLUTE steps from original paste (this matches your UI text)
     const x = parseIntSafe(stepXEl.value, 0);
     const y = parseIntSafe(stepYEl.value, 0);
 
     const raw = (logTextEl.value || "").trim();
-    if (!raw) {
-      alert("Paste a log block first.");
-      return;
-    }
+    if (!raw) return alert("Paste a log block first.");
 
     const parsed = parseLogBlock(raw);
     if (!parsed) {
-      alert("No usable session found. Paste must include 'You start to gather fragments...' or 'You start to analyse/analyze the shard/ore.'");
-      return;
+      return alert("No usable session found. Include 'You start to gather fragments...' or 'You start to analyse/analyze the shard/ore.'");
     }
 
     state.entries.push({ x, y, parsed, raw });
     saveState();
-
-    // clear paste box for next entry (optional)
     logTextEl.value = "";
     render();
   }
@@ -695,12 +684,12 @@
     a.click();
   }
 
-  addBtn?.addEventListener("click", addEntry);
-  undoBtn?.addEventListener("click", undoEntry);
-  resetBtn?.addEventListener("click", resetAll);
-  downloadBtn?.addEventListener("click", downloadPNG);
+  addBtn.addEventListener("click", addEntry);
+  undoBtn.addEventListener("click", undoEntry);
+  resetBtn.addEventListener("click", resetAll);
+  downloadBtn.addEventListener("click", downloadPNG);
 
   // ---------- Init ----------
   loadState();
   render();
-})();
+});
